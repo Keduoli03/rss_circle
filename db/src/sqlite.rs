@@ -18,7 +18,11 @@ pub async fn connect_sqlite_dbpool(filename: impl AsRef<Path>) -> Result<SqliteP
 pub async fn insert_post_table(post: &metadata::Posts, pool: &SqlitePool) -> Result<(), Error> {
     let sql = "INSERT INTO posts
     (title, author, link, avatar ,rule,created,updated,createdAt)
-     VALUES (?, ?, ?,?, ?,?, ?, ?)";
+     VALUES (?, ?, ?,?, ?,?, ?, ?)
+     ON CONFLICT(link) DO UPDATE SET
+         title=excluded.title, author=excluded.author, avatar=excluded.avatar,
+         rule=excluded.rule, created=excluded.created, updated=excluded.updated,
+         createdAt=excluded.createdAt";
     let q = query(sql)
         .bind(&post.meta.title)
         .bind(&post.author)
@@ -76,6 +80,12 @@ pub async fn bulk_insert_post_table(
             .push_bind(post.meta.updated)
             .push_bind(post.created_at);
     });
+    query_builder.push(
+        " ON CONFLICT(link) DO UPDATE SET
+          title=excluded.title, author=excluded.author, avatar=excluded.avatar,
+          rule=excluded.rule, created=excluded.created, updated=excluded.updated,
+          createdAt=excluded.createdAt",
+    );
     let query = query_builder.build();
     query.execute(pool).await?;
     Ok(())
@@ -281,13 +291,19 @@ pub async fn truncate_table(pool: &SqlitePool, tb: &str) -> Result<(), Error> {
 }
 
 pub async fn delete_outdated_posts(days: usize, dbpool: &SqlitePool) -> Result<usize, Error> {
-    if days == 0 {
-        return Ok(0);
-    }
-    let sql = format!("DELETE FROM posts WHERE date(updated) < date('now', '-{days} days')");
-    let affected_rows = query(&sql).execute(dbpool).await?;
-
-    Ok(affected_rows.rows_affected() as usize)
+    let mut tx = dbpool.begin().await?;
+    let affected_rows = if days == 0 {
+        0
+    } else {
+        let sql = format!("DELETE FROM posts WHERE date(updated) < date('now', '-{days} days')");
+        query(&sql).execute(&mut *tx).await?.rows_affected() as usize
+    };
+    // Also remove summaries left behind by blocked or expired articles.
+    query("DELETE FROM article_summaries WHERE NOT EXISTS (SELECT 1 FROM posts WHERE posts.link = article_summaries.link)")
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(affected_rows)
 }
 
 // Article Summary Operations

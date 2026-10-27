@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 
 use chrono::Utc;
@@ -42,6 +42,21 @@ pub async fn write_data_to_json(pool: &SqlitePool) -> Result<(), Box<dyn std::er
     info!("数据已成功写入到data.json文件");
 
     Ok(())
+}
+
+fn preserve_publication_dates(
+    posts: &mut [metadata::BasePosts],
+    existing: &HashMap<String, metadata::Posts>,
+) {
+    for post in posts {
+        if let Some(previous) = existing.get(&post.link)
+            && post.rule == "feed"
+            && previous.meta.rule == "feed"
+        {
+            // Feed rebuilds may change updated-only entries; publication is not crawl time.
+            post.created = previous.meta.created.clone();
+        }
+    }
 }
 
 fn finalize_friend(
@@ -491,6 +506,10 @@ async fn main() {
     let mut tasks = vec![];
 
     for friend in format_base_friends {
+        if download::is_blog_blocked(&fc_settings, &friend.link) {
+            info!("跳过屏蔽博客: {}", friend.link);
+            continue;
+        }
         // if friend.link != "https://akilar.top/" {
         //     continue;
         // }
@@ -568,6 +587,9 @@ async fn main() {
         let lost_friend_postpages = json_friends_links_meta.lost_friends;
         // info!("settings_friend_postpages: {:?}", settings_friend_postpages);
         for postpage_vec in settings_friend_postpages {
+            if postpage_vec.len() < 3 || download::is_blog_blocked(&fc_settings, &postpage_vec[1]) {
+                continue;
+            }
             let tm: chrono::DateTime<chrono::FixedOffset> = now;
             let created_at = tools::strptime_to_string_ymdhms(tm);
             let base_post = metadata::Friends::new(
@@ -613,6 +635,9 @@ async fn main() {
             if postpage_vec.len() < 3 {
                 continue;
             }
+            if download::is_blog_blocked(&fc_settings, &postpage_vec[1]) {
+                continue;
+            }
             let tm: chrono::DateTime<chrono::FixedOffset> = now;
             let created_at = tools::strptime_to_string_ymdhms(tm);
             let mut base_post = metadata::Friends::new(
@@ -639,6 +664,15 @@ async fn main() {
     }
     for task in tasks {
         let mut res = task.await.unwrap();
+        if !res.0.lost {
+            res.0.error = res.1.is_empty();
+        }
+        res.1
+            .retain(|post| !download::is_article_blocked(&fc_settings, &post.link));
+        res.1
+            .sort_by(|a, b| b.created.cmp(&a.created).then_with(|| a.link.cmp(&b.link)));
+        let mut seen_links = HashSet::new();
+        res.1.retain(|post| seen_links.insert(post.link.clone()));
         if fc_settings.max_posts_num > 0 {
             res.1 = res
                 .1
@@ -672,6 +706,25 @@ async fn main() {
                     return;
                 }
             };
+            let existing_posts = match sqlite::select_all_from_posts(&dbpool, 0, 0, "updated").await {
+                Ok(posts) => posts,
+                Err(e) => {
+                    error!("{}", e);
+                    return;
+                }
+            };
+            let blocked_posts = existing_posts
+                .iter()
+                .filter(|post| download::is_article_blocked(&fc_settings, &post.meta.link))
+                .cloned();
+            if let Err(e) = sqlite::delete_post_table(blocked_posts, &dbpool).await {
+                error!("{}", e);
+                return;
+            }
+            let existing_posts_map: HashMap<String, metadata::Posts> = existing_posts
+                .into_iter()
+                .map(|post| (post.meta.link.clone(), post))
+                .collect();
             if let Err(e) = sqlite::truncate_friend_table(&dbpool).await {
                 error!("{}", e);
                 return;
@@ -682,9 +735,7 @@ async fn main() {
                 .collect();
             let now_str = tools::strptime_to_string_ymdhms(now);
             for mut crawl_res in all_res {
-                if crawl_res.1.is_empty() {
-                    crawl_res.0.error = true;
-                }
+                preserve_publication_dates(&mut crawl_res.1, &existing_posts_map);
                 let link = crawl_res.0.link.clone();
                 crawl_res.0 = finalize_friend(
                     crawl_res.0,
@@ -700,10 +751,6 @@ async fn main() {
                             tools::strptime_to_string_ymdhms(now),
                         )
                     });
-                    if let Err(e) = sqlite::delete_post_table(posts.clone(), &dbpool).await {
-                        error!("{}", e);
-                        return;
-                    }
                     if let Err(e) = sqlite::bulk_insert_post_table(posts, &dbpool).await {
                         error!("{}", e);
                         return;
@@ -769,6 +816,25 @@ async fn main() {
                     return;
                 }
             };
+            let existing_posts = match mysql::select_all_from_posts(&dbpool, 0, 0, "updated").await {
+                Ok(posts) => posts,
+                Err(e) => {
+                    error!("{}", e);
+                    return;
+                }
+            };
+            let blocked_posts = existing_posts
+                .iter()
+                .filter(|post| download::is_article_blocked(&fc_settings, &post.meta.link))
+                .cloned();
+            if let Err(e) = mysql::delete_post_table(blocked_posts, &dbpool).await {
+                error!("{}", e);
+                return;
+            }
+            let existing_posts_map: HashMap<String, metadata::Posts> = existing_posts
+                .into_iter()
+                .map(|post| (post.meta.link.clone(), post))
+                .collect();
             if let Err(e) = mysql::truncate_friend_table(&dbpool).await {
                 error!("{}", e);
                 return;
@@ -779,9 +845,7 @@ async fn main() {
                 .collect();
             let now_str = tools::strptime_to_string_ymdhms(now);
             for mut crawl_res in all_res {
-                if crawl_res.1.is_empty() {
-                    crawl_res.0.error = true;
-                }
+                preserve_publication_dates(&mut crawl_res.1, &existing_posts_map);
                 let link = crawl_res.0.link.clone();
                 crawl_res.0 = finalize_friend(
                     crawl_res.0,
@@ -853,6 +917,25 @@ async fn main() {
                     return;
                 }
             };
+            let existing_posts = match mongo::select_all_from_posts(&clientdb, 0, 0, "updated").await {
+                Ok(posts) => posts,
+                Err(e) => {
+                    error!("{}", e);
+                    return;
+                }
+            };
+            let blocked_posts = existing_posts
+                .iter()
+                .filter(|post| download::is_article_blocked(&fc_settings, &post.meta.link))
+                .cloned();
+            if let Err(e) = mongo::delete_post_table(blocked_posts, &clientdb).await {
+                error!("{}", e);
+                return;
+            }
+            let existing_posts_map: HashMap<String, metadata::Posts> = existing_posts
+                .into_iter()
+                .map(|post| (post.meta.link.clone(), post))
+                .collect();
             if let Err(e) = mongo::truncate_friend_table(&clientdb).await {
                 error!("{}", e);
                 return;
@@ -863,9 +946,7 @@ async fn main() {
                 .collect();
             let now_str = tools::strptime_to_string_ymdhms(now);
             for mut crawl_res in all_res {
-                if crawl_res.1.is_empty() {
-                    crawl_res.0.error = true;
-                }
+                preserve_publication_dates(&mut crawl_res.1, &existing_posts_map);
                 let link = crawl_res.0.link.clone();
                 crawl_res.0 = finalize_friend(
                     crawl_res.0,
@@ -945,6 +1026,33 @@ async fn main() {
 mod tests {
     use super::*;
     use data_structures::metadata::ArticleSummary;
+
+    #[test]
+    fn test_feed_rebuild_keeps_original_publication_date() {
+        let original = metadata::BasePosts::new(
+            "Post".into(),
+            "2026-10-20".into(),
+            "2026-10-20".into(),
+            "https://example.com/post/".into(),
+            "feed".into(),
+        );
+        let mut refreshed = original.clone();
+        refreshed.created = "2026-10-27".into();
+        refreshed.updated = "2026-10-27".into();
+        let existing = HashMap::from([(
+            original.link.clone(),
+            metadata::Posts::new(
+                original,
+                "Author".into(),
+                String::new(),
+                "2026-10-20".into(),
+            ),
+        )]);
+        let mut posts = vec![refreshed];
+        preserve_publication_dates(&mut posts, &existing);
+        assert_eq!(posts[0].created, "2026-10-20");
+        assert_eq!(posts[0].updated, "2026-10-27");
+    }
 
     #[test]
     fn test_finalize_friend_keeps_existing_created_at() {

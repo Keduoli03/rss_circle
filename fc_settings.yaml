@@ -59,6 +59,18 @@ BLOCK_SITE: [
 # 是否反向屏蔽站点，true表示反向屏蔽，false表示正向屏蔽
 BLOCK_SITE_REVERSE: false
 
+# 按域名屏蔽整个博客：不抓文章，也不做主页连通性检测。无需写正则。
+# 可填 example.com 或 https://example.com/；仅匹配该域名，不包含其他子域名。
+# 下次爬取会同时清除这些域名已有的文章；留空表示不额外屏蔽。
+BLOCK_BLOGS:
+  - www.ccgxk.com
+  - ccgxk.com
+
+# 按文章 URL 正则过滤；也会清除已入库的匹配文章，不影响该站其他文章。
+# 文档站的友链页、项目介绍页不是博客文章，避免反复占据动态列表。
+BLOCK_ARTICLE:
+  - '^https?://docs\.asoe\.cn/(friends|project)(/|$)'
+
 # 从每个主页中最多获取几篇文章，请设置一个正整数
 # 设置为0表示无限制
 MAX_POSTS_NUM:  5
@@ -71,8 +83,9 @@ MAX_POSTS_NUM:  5
 # 过期文章清除（天）
 OUTDATE_CLEAN: 60
 
-# 定时任务，每天0点、6点、12点、18点、21点执行一次
-CRON: "0 0,6,12,18,21 * * *"
+# 自托管定时任务（服务器时区需为 Asia/Shanghai），每天 08:00、20:00 执行
+# GitHub Actions 的 UTC 定时配置另见 .github/workflows/CI.yml
+CRON: "0 8,20 * * *"
 
 # 极简模式是否开启
 SIMPLE_MODE: false

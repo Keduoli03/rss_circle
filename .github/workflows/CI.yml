@@ -5,7 +5,8 @@ on:
     tags:
       - "v*.*.*"
   schedule:
-    - cron: "0 0,6,12,18,21 * * *"
+    # GitHub cron uses UTC: 08:00 and 20:00 in Asia/Shanghai.
+    - cron: "0 0,12 * * *"
   workflow_dispatch:
 
 env:
@@ -151,10 +152,15 @@ jobs:
     # needs: [check, test-versions]
     name: build and run core
     runs-on: ubuntu-latest
+    concurrency:
+      group: fcircle-data-${{ github.ref }}
+      cancel-in-progress: false
     steps:
       - name: Checkout
         uses: actions/checkout@main
       - uses: Swatinem/rust-cache@v2
+      - name: Test crawler regressions
+        run: cargo test -p downloader -p core -p data_structures --lib --bins
       - name: Build
         run: cargo build --release
       - name: Read Config Values

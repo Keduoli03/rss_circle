@@ -1,4 +1,4 @@
-use chrono::{FixedOffset, Utc};
+use chrono::FixedOffset;
 use data_structures::metadata;
 use feed_rs::parser;
 use html_escape::decode_html_entities;
@@ -188,8 +188,14 @@ pub async fn crawl_post_page_feed(
         .error_for_status()?
         .bytes()
         .await?;
-    // let html = reqwest::get(url).await?.bytes().await?;
-    if let Ok(feed_from_xml) = parser::parse(html.as_ref()) {
+    parse_post_feed(html.as_ref(), base_url)
+}
+
+fn parse_post_feed(
+    html: &[u8],
+    base_url: &Url,
+) -> Result<Vec<metadata::BasePosts>, Box<dyn std::error::Error>> {
+    if let Ok(feed_from_xml) = parser::parse(html) {
         let entries = feed_from_xml.entries;
         // 返回结果init
         let mut format_base_posts = vec![];
@@ -230,14 +236,12 @@ pub async fn crawl_post_page_feed(
             let updated_time = entry
                 .updated
                 .map(|t| tools::strptime_to_string_ymd(t.fixed_offset()));
-            let fallback_time =
-                tools::strptime_to_string_ymd(Utc::now().with_timezone(&BEIJING_OFFSET.unwrap()));
-
-            let created = published_time
-                .clone()
-                .or(updated_time.clone())
-                .unwrap_or(fallback_time.clone());
-            let updated = updated_time.or(published_time).unwrap_or(fallback_time);
+            let Some(created) = published_time.clone().or(updated_time.clone()) else {
+                // A crawl timestamp is not a publication date and would resurface this page daily.
+                warn!("feed entry has no publication/update date, skipping: {}", link);
+                continue;
+            };
+            let updated = updated_time.or(published_time).unwrap_or_else(|| created.clone());
             let base_post =
                 metadata::BasePosts::new(title, created, updated, link, "feed".to_string());
             format_base_posts.push(base_post);
@@ -245,5 +249,36 @@ pub async fn crawl_post_page_feed(
         Ok(format_base_posts)
     } else {
         Ok(Vec::new())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_undated_feed_entries_are_not_published_today() {
+        let xml = br#"<?xml version="1.0"?><rss version="2.0"><channel>
+            <title>Blog</title><link>https://example.com/</link><description>Blog</description>
+            <lastBuildDate>Mon, 26 Oct 2026 05:04:22 GMT</lastBuildDate>
+            <item><title>Project</title><link>https://example.com/project/</link></item>
+            <item><title>Post</title><link>https://example.com/post/</link>
+            <pubDate>Sun, 25 Oct 2026 06:32:26 GMT</pubDate></item>
+            </channel></rss>"#;
+        let posts = parse_post_feed(xml, &Url::parse("https://example.com/").unwrap()).unwrap();
+        assert_eq!(posts.len(), 1);
+        assert_eq!(posts[0].created, "2026-10-25");
+    }
+
+    #[test]
+    fn test_atom_updated_only_date_is_supported() {
+        let xml = br#"<feed xmlns="http://www.w3.org/2005/Atom"><id>https://example.com/</id>
+            <title>Blog</title><updated>2026-10-26T05:04:22Z</updated>
+            <entry><id>https://example.com/post/</id><title>Post</title>
+            <link href="https://example.com/post/"/><updated>2026-10-20T05:04:22Z</updated>
+            </entry></feed>"#;
+        let posts = parse_post_feed(xml, &Url::parse("https://example.com/").unwrap()).unwrap();
+        assert_eq!(posts.len(), 1);
+        assert_eq!(posts[0].created, "2026-10-20");
     }
 }

@@ -103,6 +103,32 @@ fn check_block_site(block_sites: &Vec<String>, url: &str, block_site_reverse: bo
     block_site_reverse
 }
 
+/// Domain entries are literal, not regular expressions, and cover both HTTP and HTTPS.
+pub fn is_blog_blocked(settings: &Settings, link: &str) -> bool {
+    let host = Url::parse(link)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned));
+    let blocked_domain = host.is_some_and(|host| {
+        settings.block_blogs.iter().any(|entry| {
+            let entry = entry.trim();
+            let url = if entry.contains("://") {
+                entry.to_string()
+            } else {
+                format!("https://{entry}")
+            };
+            Url::parse(&url).ok().is_some_and(|url| {
+                url.host_str()
+                    .is_some_and(|blocked| host.eq_ignore_ascii_case(blocked))
+            })
+        })
+    });
+    blocked_domain || check_block_site(&settings.block_site, link, settings.block_site_reverse)
+}
+
+pub fn is_article_blocked(settings: &Settings, link: &str) -> bool {
+    is_blog_blocked(settings, link) || check_block_site(&settings.block_article, link, false)
+}
+
 pub async fn start_crawl_postpages(
     base_postpage_url: String,
     settings: &Settings,
@@ -111,8 +137,7 @@ pub async fn start_crawl_postpages(
     client: &ClientWithMiddleware,
 ) -> Result<Vec<metadata::BasePosts>, Box<dyn std::error::Error>> {
     // check block url
-    let block_sites = &settings.block_site;
-    if check_block_site(block_sites, &base_postpage_url, settings.block_site_reverse) {
+    if is_blog_blocked(settings, &base_postpage_url) {
         return Ok(Vec::new());
     };
     let base_url = match Url::parse(&base_postpage_url) {
@@ -122,6 +147,15 @@ pub async fn start_crawl_postpages(
             return Ok(Vec::new());
         }
     };
+    // An explicitly configured feed is authoritative; do not race it against autodetection.
+    if !extra_feed_suffix.trim().is_empty() {
+        let feed_url = base_url.join(extra_feed_suffix.trim())?;
+        if let Ok(posts) = crawler::crawl_post_page_feed(feed_url.as_str(), &base_url, client).await
+            && !posts.is_empty()
+        {
+            return Ok(posts);
+        }
+    }
     let css_rules = css_rules.clone();
     let mut joinset = JoinSet::new();
 
@@ -142,7 +176,6 @@ pub async fn start_crawl_postpages(
             "rss2.xml",
             "feed",
             "index.xml",
-            extra_feed_suffix.as_str(),
         ] {
             let client = client.clone();
             let base_url = base_url.clone();
@@ -420,6 +453,35 @@ pub async fn start_crawl_detailpages(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_blog_and_article_filters() {
+        let mut settings: Settings =
+            serde_yaml::from_str(include_str!("../../fc_settings.yaml")).unwrap();
+        settings.block_site.clear();
+        settings.block_blogs = vec!["example.com".into(), "https://blog.example.org/".into()];
+        assert!(is_blog_blocked(&settings, "http://example.com/post/1"));
+        assert!(is_blog_blocked(&settings, "https://BLOG.example.org/feed"));
+        assert!(!is_blog_blocked(&settings, "https://notexample.com/"));
+        assert!(!is_blog_blocked(&settings, "https://example.com.evil.test/"));
+        assert!(!is_blog_blocked(&settings, "https://sub.example.com/"));
+        assert!(is_article_blocked(&settings, "https://docs.asoe.cn/project/eSearch/"));
+        assert!(is_article_blocked(&settings, "https://docs.asoe.cn/friends/"));
+        assert!(!is_article_blocked(&settings, "https://docs.asoe.cn/blog/21/"));
+        assert!(!is_blog_blocked(&settings, "https://docs.asoe.cn/"));
+    }
+
+    #[test]
+    fn test_old_settings_without_new_filters() {
+        let mut yaml: serde_yaml::Value =
+            serde_yaml::from_str(include_str!("../../fc_settings.yaml")).unwrap();
+        let mapping = yaml.as_mapping_mut().unwrap();
+        mapping.remove(&serde_yaml::Value::String("BLOCK_BLOGS".into()));
+        mapping.remove(&serde_yaml::Value::String("BLOCK_ARTICLE".into()));
+        let settings: Settings = serde_yaml::from_value(yaml).unwrap();
+        assert!(settings.block_blogs.is_empty());
+        assert!(settings.block_article.is_empty());
+    }
 
     #[test]
     fn test_build_client_with_retry() {

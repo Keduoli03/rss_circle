@@ -336,6 +336,10 @@ pub mod config {
         pub block_site: Vec<String>,
         #[serde(rename = "BLOCK_SITE_REVERSE")]
         pub block_site_reverse: bool,
+        #[serde(default, rename = "BLOCK_BLOGS")]
+        pub block_blogs: Vec<String>,
+        #[serde(default, rename = "BLOCK_ARTICLE")]
+        pub block_article: Vec<String>,
         #[serde(rename = "MAX_POSTS_NUM")]
         pub max_posts_num: usize,
         #[serde(rename = "OUTDATE_CLEAN")]
