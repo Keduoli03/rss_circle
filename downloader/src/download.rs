@@ -129,6 +129,23 @@ pub fn is_article_blocked(settings: &Settings, link: &str) -> bool {
     is_blog_blocked(settings, link) || check_block_site(&settings.block_article, link, false)
 }
 
+pub fn resolve_avatar_url(avatar: &str, base_url: &str) -> String {
+    let avatar = avatar.trim();
+    if avatar.is_empty() {
+        return String::new();
+    }
+    // Files in Astro's public/ directory are served directly from the site root.
+    let path = avatar.strip_prefix("public/")
+        .or_else(|| avatar.strip_prefix("/public/"))
+        .map(|path| format!("/{path}"))
+        .unwrap_or_else(|| avatar.to_string());
+    let resolved = Url::parse(&path).or_else(|_| Url::parse(base_url)?.join(&path));
+    match resolved {
+        Ok(url) if matches!(url.scheme(), "http" | "https") => url.to_string(),
+        _ => String::new(),
+    }
+}
+
 pub async fn start_crawl_postpages(
     base_postpage_url: String,
     settings: &Settings,
@@ -469,6 +486,17 @@ mod tests {
         assert!(is_article_blocked(&settings, "https://docs.asoe.cn/friends/"));
         assert!(!is_article_blocked(&settings, "https://docs.asoe.cn/blog/21/"));
         assert!(!is_blog_blocked(&settings, "https://docs.asoe.cn/"));
+    }
+
+    #[test]
+    fn test_local_avatar_paths_use_the_blog_base_url() {
+        let expected = "https://blueke.top/images/friends/081fe612c98ff538.webp";
+        for path in ["/images/friends/081fe612c98ff538.webp", "public/images/friends/081fe612c98ff538.webp", "/public/images/friends/081fe612c98ff538.webp"] {
+            assert_eq!(resolve_avatar_url(path, "https://blueke.top/"), expected);
+        }
+        assert_eq!(resolve_avatar_url("https://example.com/avatar.png", "https://blueke.top/"), "https://example.com/avatar.png");
+        assert_eq!(resolve_avatar_url("", "https://blueke.top/"), "");
+        assert_eq!(resolve_avatar_url("javascript:alert(1)", "https://blueke.top/"), "");
     }
 
     #[test]

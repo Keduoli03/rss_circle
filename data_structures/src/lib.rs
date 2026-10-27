@@ -266,6 +266,8 @@ pub mod config {
     pub struct SettingsFriendsLinksMeta {
         pub enable: bool,
         pub json_api_or_path: String,
+        #[serde(default)]
+        pub avatar_base_url: String,
         pub list: Vec<Vec<String>>,
     }
 

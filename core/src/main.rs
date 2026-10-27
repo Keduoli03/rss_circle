@@ -595,7 +595,10 @@ async fn main() {
             let base_post = metadata::Friends::new(
                 postpage_vec[0].clone(),
                 postpage_vec[1].clone(),
-                postpage_vec[2].clone(),
+                download::resolve_avatar_url(
+                    &postpage_vec[2],
+                    &fc_settings.settings_friends_links.avatar_base_url,
+                ),
                 false,
                 created_at,
             );
@@ -643,7 +646,10 @@ async fn main() {
             let mut base_post = metadata::Friends::new(
                 postpage_vec[0].clone(),
                 postpage_vec[1].clone(),
-                postpage_vec[2].clone(),
+                download::resolve_avatar_url(
+                    &postpage_vec[2],
+                    &fc_settings.settings_friends_links.avatar_base_url,
+                ),
                 false,
                 created_at,
             );

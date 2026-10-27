@@ -31,6 +31,8 @@ BLOCK_ARTICLE:
 
 ### 定时任务与 SQLite 维护
 
+友链头像也支持博客的本地图片：`public/images/friends/example.webp` 在浏览器中访问的路径是 `/images/friends/example.webp`。在 `SETTINGS_FRIENDS_LINKS.avatar_base_url` 设置图片所属博客的公开根地址（本项目为 `https://blueke.top/`），爬虫会把相对头像转换成完整 HTTP(S) URL，避免在独立 RSS API 域名下请求错误地址。远程头像 URL 保持可用，空头像保持为空。
+
 - GitHub Actions 默认每天北京时间 **08:00、20:00** 定时抓取（UTC cron 为 `0 0,12 * * *`）。GitHub 可能延迟调度；代码推送和手动触发仍然会执行，不计入这两次定时任务。
 - 自托管 `CRON` 同步为 `0 8,20 * * *`，服务器需使用 `Asia/Shanghai` 时区。同一分支的 Actions 抓取任务串行执行，避免重叠写入数据。
 - SQLite 第 3 号迁移会按完整文章 URL 去重，保留抓取时间较新的一份；同一时间则保留 ID 较大的一份。博客改名不会再生成第二份文章，后续写入使用 URL 唯一约束及原子 upsert。
